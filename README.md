@@ -9,7 +9,7 @@ A FastAPI microservice that aggregates data from three external APIs (Genderize,
 ```
 profiles-api/
 ├── api/
-│   └── index.py       # FastAPI app (Vercel entrypoint)
+│   └── main.py       # FastAPI app (Vercel entrypoint)
 ├── requirements.txt
 └── README.md
 ```
