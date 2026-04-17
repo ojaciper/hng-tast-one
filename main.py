@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from helper.helper import call_agify, call_genderize, call_nationalize
 from schama.profile import ProfileCreate
 from database.database import get_db, engine, Base
-from database.model import Profile
+from database.model import Profile, generate_uuid7
 import asyncio
 
 Base.metadata.create_all(bind=engine)
@@ -70,8 +70,10 @@ async def create_profile(profile: ProfileCreate, db: Session = Depends(get_db)):
 
         gender_data, age_data, country_data = await asyncio.gather(
             gender_task, age_task, country_task
-        )        
+        ) 
+        profile_id = generate_uuid7()       
         new_profile = Profile(
+            id=profile_id,
             name=normalized_name,
             gender=gender_data["gender"],
             gender_probability=gender_data["gender_probability"],
