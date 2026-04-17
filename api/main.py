@@ -171,18 +171,19 @@ async def create_profile(profile: ProfileCreate, db: Session = Depends(get_db)):
 
 @app.get("/api/profiles", status_code=200)
 def list_profiles(
-    gender: Optional[str],
-    country_id: Optional[str],
-    age_group: Optional[str],
+    gender: Optional[str]=None,
+    country_id: Optional[str]=None,
+    age_group: Optional[str]=None,
     db: Session = Depends(get_db),
 ):
+    query = db.query(Profile)
     if gender:
-        db.query(Profile).filter(Profile.gender == gender.lower())
+        query.filter(Profile.gender == gender.lower())
     if country_id:
-        db.query(Profile).filter(Profile.country_id == country_id.lower())
+        query.filter(Profile.country_id == country_id.lower())
     if age_group:
-        db.query(Profile).filter(Profile.age_group == age_group.lower())
-    profiles = db.query(Profile).order_by(Profile.created_at.desc()).all()
+        query.filter(Profile.age_group == age_group.lower())
+    profiles = query.order_by(Profile.created_at.desc()).all()
 
     return {
         "status": "success",
@@ -237,7 +238,7 @@ def delete_profile(profile_id: str, db: Session = Depends(get_db)):
     db.delete(profile)
     db.commit()
 
-    return JSONResponse(status_code=204, content=None)
+    return 
 
 @app.get("/")
 def root():
