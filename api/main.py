@@ -1,15 +1,16 @@
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, Query
 from fastapi.responses import JSONResponse
 import httpx
-from sqlalchemy import func
+from sqlalchemy import asc, desc, func
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from helper.helper import determin_age_group
 from schama.profile import ProfileCreate
 from database.database import get_db, engine, Base
 from database.model import Profile, generate_uuid7
+from utils.natural_lang import NaturalLanguageParser
 
 
 Base.metadata.create_all(bind=engine)
@@ -48,18 +49,16 @@ async def create_profile(profile: ProfileCreate, db: Session = Depends(get_db)):
             "status": "success",
             "message": "Profile already exists",
             "data": {
-                "id": existing_profile.id,
-                "name": existing_profile.name,
-                "gender": existing_profile.gender,
-                "gender_probability": existing_profile.gender_probability,
-                "sample_size": existing_profile.sample_size,
-                "age": existing_profile.age,
-                "age_group": existing_profile.age_group,
-                "country_id": existing_profile.country_id,
-                "country_probability": existing_profile.country_probability,
-                "created_at": existing_profile.created_at.isoformat().replace(
-                    "+00:00", "Z"
-                ),
+                "id": profile.id,
+                "name": profile.name,
+                "gender": profile.gender,
+                "gender_probability": profile.gender_probability,
+                "age": profile.age,
+                "age_group": profile.age_group,
+                "country_id": profile.country_id,
+                "country_name": profile.country_name,
+                "country_probability": profile.country_probability,
+                "created_at": profile.created_at.isoformat().replace("+00:00", "Z"),
             },
         }
     try:
@@ -125,7 +124,6 @@ async def create_profile(profile: ProfileCreate, db: Session = Depends(get_db)):
             name=normalized_name,
             gender=g_data["gender"],
             gender_probability=g_data["probability"],
-            sample_size=g_data["count"],
             age=a_data["age"],
             age_group=determin_age_group(a_data["age"]),
             country_id=top_country["country_id"],
@@ -169,32 +167,137 @@ def list_profiles(
     gender: Optional[str] = None,
     country_id: Optional[str] = None,
     age_group: Optional[str] = None,
+    min_age: Optional[int] = Query(None, ge=0, le=150),
+    max_age: Optional[int] = Query(None, ge=0, le=150),
+    min_gender_probability: Optional[float] = Query(None, ge=0, le=1),
+    min_country_probability: Optional[float] = Query(None, ge=0, le=1),
+    sort_by: Optional[str] = Query(
+        "created_at", regex="^(age|created_at|gender_probability)$"
+    ),
+    order: Optional[str] = Query("desc", regex="^(asc|desc)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
     query = db.query(Profile)
     if gender:
-       query= query.filter(func.lower(Profile.gender) == gender.lower())
+        query = query.filter(func.lower(Profile.gender) == gender.lower())
     if country_id:
-       query= query.filter(func.lower(Profile.country_id) == country_id.lower())
+        query = query.filter(func.lower(Profile.country_id) == country_id.lower())
     if age_group:
-        query=query.filter(func.lower(Profile.age_group) == age_group.lower())
+        query = query.filter(func.lower(Profile.age_group) == age_group.lower())
+    if min_age is not None:
+        query = query.filter(Profile.age >= min_age)
+    if max_age is not None:
+        query = query.filter(Profile.age <= max_age)
+    if min_gender_probability is not None:
+        query = query.filter(Profile.gender_probability >= min_gender_probability)
+    if min_country_probability is not None:
+        query = query.filter(Profile.country_probability >= min_country_probability)
+
     profiles = query.order_by(Profile.created_at.desc()).all()
 
+    total = query.count()
+
+    # Apply sorting
+    if sort_by == "age":
+        order_func = desc if order == "desc" else asc
+        query = query.order_by(order_func(Profile.age))
+    elif sort_by == "gender_probability":
+        order_func = desc if order == "desc" else asc
+        query = query.order_by(order_func(Profile.gender_probability))
+    else:
+        order_func = desc if order == "desc" else asc
+        query = query.order_by(order_func(Profile.created_at))
+
+    offset = (page - 1) * limit
+    profiles = query.limit(limit).offset(offset).all()
     return {
         "status": "success",
         "count": len(profiles),
         "data": [
             {
+                "id": profile.id,
+                "name": profile.name,
+                "gender": profile.gender,
+                "gender_probability": profile.gender_probability,
+                "age": profile.age,
+                "age_group": profile.age_group,
+                "country_id": profile.country_id,
+                "country_name": profile.country_name,
+                "country_probability": profile.country_probability,
+                "created_at": profile.created_at.isoformat().replace("+00:00", "Z"),
+            }
+            for profile in profiles
+        ],
+    }
+    
+    
+
+@app.get("/api/profiles/search")
+def natural_search(
+    q: str = Query(..., min_length=1),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """Natural language search endpoint"""
+    
+    # Parse natural language query
+    parser = NaturalLanguageParser()
+    filters = parser.parse(q)
+    
+    if not filters:
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": "Unable to interpret query"}
+        )
+    
+    # Build query
+    query = db.query(Profile)
+    
+    # Apply filters
+    if 'gender' in filters:
+        query = query.filter(Profile.gender == filters['gender'])
+    if 'age_group' in filters:
+        query = query.filter(Profile.age_group == filters['age_group'])
+    if 'country_id' in filters:
+        query = query.filter(Profile.country_id == filters['country_id'])
+    if 'min_age' in filters:
+        query = query.filter(Profile.age >= filters['min_age'])
+    if 'max_age' in filters:
+        query = query.filter(Profile.age <= filters['max_age'])
+    
+    # Get total count
+    total = query.count()
+    
+    # Apply pagination
+    offset = (page - 1) * limit
+    profiles = query.limit(limit).offset(offset).all()
+    
+    return {
+        "status": "success",
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "query_interpreted": filters,
+        "data": [
+            {
                 "id": p.id,
                 "name": p.name,
                 "gender": p.gender,
+                "gender_probability": p.gender_probability,
                 "age": p.age,
                 "age_group": p.age_group,
                 "country_id": p.country_id,
+                "country_name": p.country_name,
+                "country_probability": p.country_probability,
+                "created_at": p.created_at.isoformat().replace('+00:00', 'Z')
             }
             for p in profiles
-        ],
+        ]
     }
+
 
 
 @app.get("/api/profiles/{profile_id}", status_code=200)
@@ -212,14 +315,43 @@ def get_profile(profile_id: str, db: Session = Depends(get_db)):
             "name": profile.name,
             "gender": profile.gender,
             "gender_probability": profile.gender_probability,
-            "sample_size": profile.sample_size,
             "age": profile.age,
             "age_group": profile.age_group,
             "country_id": profile.country_id,
+            "country_name": profile.country_name,
             "country_probability": profile.country_probability,
             "created_at": profile.created_at.isoformat().replace("+00:00", "Z"),
         },
     }
+
+
+
+
+@app.get("/api/profiles/stats/demographics")
+def get_demographics(db: Session = Depends(get_db)):
+    """Get demographic statistics"""
+    total = db.query(Profile).count()
+    
+    gender_stats = db.query(
+        Profile.gender, func.count(Profile.id)
+    ).group_by(Profile.gender).all()
+    
+    age_group_stats = db.query(
+        Profile.age_group, func.count(Profile.id)
+    ).group_by(Profile.age_group).all()
+    
+    country_stats = db.query(
+        Profile.country_id, func.count(Profile.id)
+    ).group_by(Profile.country_id).order_by(func.count(Profile.id).desc()).limit(10).all()
+    
+    return {
+        "status": "success",
+        "total_profiles": total,
+        "gender_distribution": {g: c for g, c in gender_stats},
+        "age_group_distribution": {ag: c for ag, c in age_group_stats},
+        "top_countries": [{"country_id": c, "count": cnt} for c, cnt in country_stats]
+    }
+
 
 
 @app.delete("/api/profiles/{profile_id}", status_code=204)
