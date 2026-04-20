@@ -1,6 +1,6 @@
-# Profiles API
+# Profiles Intelligence API — Stage 2
 
-A FastAPI microservice that aggregates data from three external APIs (Genderize, Agify, Nationalize), classifies it, persists it in a database, and exposes a full CRUD REST API.
+A queryable demographic intelligence engine built with FastAPI + PostgreSQL. Aggregates data from Genderize, Agify, and Nationalize APIs, stores 2026 seeded profiles, and exposes advanced filtering, sorting, pagination, and natural language querying.
 
 ---
 
@@ -9,8 +9,11 @@ A FastAPI microservice that aggregates data from three external APIs (Genderize,
 ```
 profiles-api/
 ├── api/
-│   └── main.py       # FastAPI app (Vercel entrypoint)
+│   └── main.py          # FastAPI app (Vercel entrypoint)
+├── seed_profiles.json    # 2026 seed profiles (bundled)
+├── seed.py               # Standalone seed script
 ├── requirements.txt
+├── vercel.json
 └── README.md
 ```
 
@@ -18,108 +21,127 @@ profiles-api/
 
 ## Endpoints
 
-### `POST /api/profiles`
-Creates a new profile by calling all three external APIs.  
-If the name already exists, returns the existing profile without re-fetching.
+### `GET /api/profiles` — Advanced Filtered List
 
-**Request body:**
-```json
-{ "name": "ella" }
+Supports all filters combinable in a single request. Returns paginated results.
+
+#### Filter Parameters
+
+| Parameter               | Type   | Description                              |
+|-------------------------|--------|------------------------------------------|
+| `gender`                | string | `male` or `female` (case-insensitive)    |
+| `age_group`             | string | `child`, `teenager`, `adult`, `senior`   |
+| `country_id`            | string | ISO 2-letter code, e.g. `NG`, `KE`      |
+| `min_age`               | int    | Minimum age (inclusive)                  |
+| `max_age`               | int    | Maximum age (inclusive)                  |
+| `min_gender_probability`| float  | e.g. `0.9`                               |
+| `min_country_probability`| float | e.g. `0.5`                               |
+
+#### Sort Parameters
+
+| Parameter | Values                                   | Default      |
+|-----------|------------------------------------------|--------------|
+| `sort_by` | `age`, `created_at`, `gender_probability`| `created_at` |
+| `order`   | `asc`, `desc`                            | `asc`        |
+
+#### Pagination Parameters
+
+| Parameter | Default | Max |
+|-----------|---------|-----|
+| `page`    | 1       | —   |
+| `limit`   | 10      | 50  |
+
+**Example:**
+```
+GET /api/profiles?gender=male&country_id=NG&min_age=25&sort_by=age&order=desc&page=1&limit=10
 ```
 
-**Success (201):**
+**Response:**
 ```json
 {
   "status": "success",
-  "data": {
-    "id": "b3f9c1e2-7d4a-4c91-9c2a-1f0a8e5b6d12",
-    "name": "ella",
-    "gender": "female",
-    "gender_probability": 0.99,
-    "sample_size": 1234,
-    "age": 46,
-    "age_group": "adult",
-    "country_id": "DRC",
-    "country_probability": 0.85,
-    "created_at": "2026-04-01T12:00:00Z"
-  }
-}
-```
-
-**Already exists (200):**
-```json
-{
-  "status": "success",
-  "message": "Profile already exists",
-  "data": { "...existing profile..." }
-}
-```
-
----
-
-### `GET /api/profiles/{id}`
-Returns a single profile by UUID.
-
-**Success (200):** Full profile object (same shape as POST response data).  
-**Not found (404):** `{ "status": "error", "message": "Profile not found" }`
-
----
-
-### `GET /api/profiles`
-Returns all profiles. Supports optional case-insensitive filters:
-
-| Query param  | Example              |
-|--------------|----------------------|
-| `gender`     | `?gender=male`       |
-| `country_id` | `?country_id=NG`     |
-| `age_group`  | `?age_group=adult`   |
-
-**Success (200):**
-```json
-{
-  "status": "success",
-  "count": 2,
+  "page": 1,
+  "limit": 10,
+  "total": 43,
   "data": [
-    { "id": "...", "name": "emmanuel", "gender": "male", "age": 25, "age_group": "adult", "country_id": "NG" }
+    {
+      "id": "...",
+      "name": "Emmanuel Touré",
+      "gender": "male",
+      "age": 38,
+      "age_group": "adult",
+      "country_id": "NG",
+      "country_name": "Nigeria"
+    }
   ]
 }
 ```
 
 ---
 
-### `DELETE /api/profiles/{id}`
-Deletes a profile. Returns **204 No Content** on success.
+### `GET /api/profiles/search` — Natural Language Query
+
+Rule-based parser converts plain English into structured filters.
+
+**Example queries:**
+
+| Query                              | Interpreted As                                      |
+|------------------------------------|-----------------------------------------------------|
+| `young males`                      | gender=male + min_age=16 + max_age=24               |
+| `females above 30`                 | gender=female + min_age=30                          |
+| `people from nigeria`              | country_id=NG                                       |
+| `adult males from kenya`           | gender=male + age_group=adult + country_id=KE       |
+| `male and female teenagers above 17` | age_group=teenager + min_age=17                  |
+| `senior females from south africa` | gender=female + age_group=senior + country_id=ZA    |
+| `women under 25 from ghana`        | gender=female + max_age=25 + country_id=GH          |
+| `men between 20 and 40`            | gender=male + min_age=20 + max_age=40               |
+
+**NL Rules:**
+- Gender: `male/males/man/men/boys` → `male`; `female/females/woman/women/girls` → `female`
+- `"young"` → min_age=16, max_age=24 (not a stored age group, parsing-only)
+- `"above X"` / `"over X"` → min_age=X
+- `"below X"` / `"under X"` → max_age=X
+- `"between X and Y"` → min_age=X, max_age=Y
+- `"children/teenagers/adults/seniors"` → age_group filter
+- `"from [country]"` / `"in [country]"` → country_id lookup (supports full names and aliases)
+- Queries with no interpretable filters return `400: Unable to interpret query`
+
+Supports same `page`, `limit`, `sort_by`, `order` params as the list endpoint.
 
 ---
 
-## Processing Rules
+### `POST /api/profiles` — Create Profile
 
-| Field              | Source       | Logic                                         |
-|--------------------|--------------|-----------------------------------------------|
-| `gender`           | Genderize    | Direct                                        |
-| `gender_probability` | Genderize  | Direct                                        |
-| `sample_size`      | Genderize    | `count` renamed                               |
-| `age`              | Agify        | Direct                                        |
-| `age_group`        | Agify        | 0–12 → child, 13–19 → teenager, 20–59 → adult, 60+ → senior |
-| `country_id`       | Nationalize  | Country with highest probability              |
-| `country_probability` | Nationalize | Probability of top country                 |
-| `id`               | Generated    | UUID v7                                       |
-| `created_at`       | Generated    | UTC ISO 8601                                  |
+```json
+{ "name": "ella" }
+```
+Calls Genderize + Agify + Nationalize, stores result. Returns existing record if name already exists.
+
+### `GET /api/profiles/{id}` — Get by UUID
+
+Returns full profile including `sample_size`, `gender_probability`, `country_probability`, `created_at`.
+
+### `DELETE /api/profiles/{id}` — Delete
+
+Returns `204 No Content`.
 
 ---
 
-## Error Handling
+## Data Model
 
-| Status | Condition |
-|--------|-----------|
-| `400`  | Missing or empty `name` |
-| `422`  | `name` has no alphabetic characters |
-| `404`  | Profile not found |
-| `502`  | External API returned null/empty data |
-| `500`  | Internal server error |
-
-All errors: `{ "status": "error", "message": "..." }`  
-502 from external APIs: `{ "status": "502", "message": "Genderize returned an invalid response" }`
+| Field                | Type         | Notes                                            |
+|----------------------|--------------|--------------------------------------------------|
+| `id`                 | UUID v7      | Primary key, timestamp-based                     |
+| `name`               | VARCHAR UNIQUE | Person's full name                             |
+| `gender`             | VARCHAR      | `male` or `female`                               |
+| `gender_probability` | FLOAT        | Confidence score from Genderize                  |
+| `sample_size`        | INT          | Genderize `count` field (renamed)                |
+| `age`                | INT          | Exact age from Agify                             |
+| `age_group`          | VARCHAR      | `child` (0–12), `teenager` (13–19), `adult` (20–59), `senior` (60+) |
+| `country_id`         | VARCHAR(2)   | ISO 2-letter code, highest probability country   |
+| `country_name`       | VARCHAR      | Full country name                                |
+| `country_probability`| FLOAT        | Probability of top country from Nationalize      |
+| `created_at`         | TIMESTAMP    | UTC ISO 8601, auto-generated                     |
 
 ---
 
@@ -140,35 +162,99 @@ source venv/bin/activate      # Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Run (SQLite by default — no setup needed)
+### Run (SQLite, seeded automatically on startup)
 
 ```bash
 uvicorn api.index:app --reload --port 8000
 ```
 
-Test:
+Or seed manually:
 ```bash
-# Create a profile
-curl -X POST "http://localhost:8000/api/profiles" \
-  -H "Content-Type: application/json" \
-  -d '{"name": "james"}'
+python3 seed.py
+```
 
-# List all profiles
+### Test examples
+
+```bash
+# All profiles (paginated)
 curl "http://localhost:8000/api/profiles"
 
-# Filter
-curl "http://localhost:8000/api/profiles?gender=male&country_id=NG"
+# Combined filter + sort + paginate
+curl "http://localhost:8000/api/profiles?gender=male&country_id=NG&sort_by=age&order=desc&page=1&limit=10"
 
-# Get by ID
-curl "http://localhost:8000/api/profiles/<id>"
-
-# Delete
-curl -X DELETE "http://localhost:8000/api/profiles/<id>"
+# Natural language search
+curl "http://localhost:8000/api/profiles/search?q=young+males+from+nigeria"
+curl "http://localhost:8000/api/profiles/search?q=senior+females+from+south+africa"
+curl "http://localhost:8000/api/profiles/search?q=adult+males+from+kenya&limit=5"
 ```
 
 ---
 
+## Deployment (Vercel + Neon)
+
+### Step 1 — Create a free Neon PostgreSQL database
+
+1. Go to [neon.tech](https://neon.tech) → sign up (free tier available)
+2. Create a new project
+3. Copy the **Connection string**: `postgresql://user:pass@host.neon.tech/dbname?sslmode=require`
+
+### Step 2 — Seed the Neon database
+
+```bash
+DATABASE_URL="postgresql://..." python3 seed.py
+```
+
+Output: `✅ Seed complete: 2026 inserted, 0 skipped`  
+Re-running is safe — duplicates are skipped.
+
+### Step 3 — Push to public GitHub
+
+```bash
+git init
+git add .
+git commit -m "initial commit"
+git remote add origin https://github.com/<username>/profiles-api.git
+git push -u origin main
+```
+
+### Step 4 — Deploy on Vercel
+
+1. Go to [vercel.com](https://vercel.com) → **Add New → Project**
+2. Import your GitHub repository
+3. Add environment variable:
+   ```
+   DATABASE_URL = postgresql://user:pass@host.neon.tech/dbname?sslmode=require
+   ```
+4. Click **Deploy**
+
+Live URL: `https://<your-project>.vercel.app`
+
+### Step 5 — Verify
+
+```bash
+curl "https://<your-project>.vercel.app/api/profiles?limit=1"
+# → {"status":"success","page":1,"limit":1,"total":2026,"data":[...]}
+
+curl "https://<your-project>.vercel.app/api/profiles/search?q=adult+males+from+nigeria"
+```
+
+---
+
+## Error Responses
+
+All errors follow this structure:
+```json
+{ "status": "error", "message": "<description>" }
+```
+
+| Status | Condition |
+|--------|-----------|
+| `400`  | Missing/empty parameter or uninterpretable NL query |
+| `422`  | Invalid parameter type |
+| `404`  | Profile not found |
+| `502`  | External API (Genderize/Agify/Nationalize) failure |
+| `500`  | Internal server error |
 
 ## CORS
 
-`Access-Control-Allow-Origin: *` is set globally via FastAPI's `CORSMiddleware`.
+`Access-Control-Allow-Origin: *` is set on every response via both `CORSMiddleware` and an HTTP middleware fallback.
