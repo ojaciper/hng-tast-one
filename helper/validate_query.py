@@ -11,7 +11,6 @@ def validate_query_parameters(
     sort_by: Optional[str] = None,
     order: Optional[str] = None
 ):
-    """Validate all query parameters"""
     
     # Validate gender
     if gender is not None:
